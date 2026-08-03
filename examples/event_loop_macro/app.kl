@@ -1,0 +1,31 @@
+/// `$event_loop` expand check (issue 029).
+/// Requires Klin with path-import macros + `block` parameter kind.
+import "../../eventloop"
+import io
+
+struct App {
+    ticks: i32
+    ex: *mut u8
+}
+
+fn on_tick(ctx: *mut u8) {
+    let app = cast(*mut App, ctx)
+    (*app).ticks = (*app).ticks + 1
+    io.println("tick")
+    if (*app).ticks >= 3 {
+        eventloop.stop(cast(*mut eventloop.Executor, (*app).ex))
+    }
+}
+
+fn main() {
+    $event_loop(ex) {
+        let mut app = App{ ticks: 0, ex: cast(*mut u8, &ex) }
+        let arm_rc = eventloop.every_ms(&ex, 50, on_tick, cast(*mut u8, &app)) or {
+            0
+        }
+        if arm_rc == 0 {
+            return
+        }
+    }
+    printf("ticks done version=%d\n", eventloop.version())
+}

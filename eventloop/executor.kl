@@ -283,3 +283,20 @@ pub fn run(ex: *mut Executor) {
         // Async-only work: busy-poll SleepFuture / task poll (no timer slots).
     }
 }
+
+// Compile-time ergonomics (path-import `$fn` + trailing `block`).
+//   import "github/klin-lang/eventloop"
+//   $event_loop(ex) {
+//       let _ = eventloop.every_ms(&ex, 100, on_tick, ctx) or { 0 }
+//   }
+// Expands to: let mut ex + init (return on fail) + body + run(&ex).
+// Nestable inside `$rtos_task` — one explicit Executor per call site.
+$fn event_loop(ex: name, body: block) {
+let mut $ex: $mod.Executor
+let rc_$ex = $mod.init(&$ex) or { 1 }
+if rc_$ex != 0 {
+  return
+}
+$body
+$mod.run(&$ex)
+}

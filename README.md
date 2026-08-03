@@ -9,14 +9,61 @@ No heap `Promise`, no hidden malloc, no hidden scheduler. Callbacks and
 ## Install
 
 ```sh
-klin get github/klin-lang/eventloop@v0.2.0
+klin get github/klin-lang/eventloop@v0.3.0
 ```
 
 ```klin
 import "github/klin-lang/eventloop"
 ```
 
-## Callback example (v0.1 API)
+## `$event_loop` (v0.3)
+
+Same direction as `$rtos_task` in `klin_freertos` — ergonomics in the library,
+explicit expand (`--emit-pp`), no hidden scheduler.
+
+```klin
+import "github/klin-lang/eventloop"
+import io
+
+struct App {
+    ticks: i32
+    ex: *mut u8
+}
+
+fn on_tick(ctx: *mut u8) {
+    let app = cast(*mut App, ctx)
+    (*app).ticks = (*app).ticks + 1
+    io.println("tick")
+    if (*app).ticks >= 3 {
+        eventloop.stop(cast(*mut eventloop.Executor, (*app).ex))
+    }
+}
+
+fn main() {
+    $event_loop(ex) {
+        let mut app = App{ ticks: 0, ex: cast(*mut u8, &ex) }
+        let _ = eventloop.every_ms(&ex, 100, on_tick, cast(*mut u8, &app)) or { 0 }
+    }
+}
+```
+
+Expand shape (`$mod` → import qualifier):
+
+```klin
+let mut ex: eventloop.Executor
+let rc_ex = eventloop.init(&ex) or { 1 }
+if rc_ex != 0 {
+  return
+}
+// body…
+eventloop.run(&ex)
+```
+
+Nestable inside `$rtos_task` — one `Executor` per call site, not a global Node loop.
+
+See [`examples/event_loop_macro/`](examples/event_loop_macro/).
+
+## Callback example (manual API)
 
 ```klin
 import "github/klin-lang/eventloop"
@@ -45,7 +92,7 @@ fn main() {
 }
 ```
 
-## Async example (v0.2 — needs Klin with `async` / `.await`)
+## Async example (needs Klin with `async` / `.await`)
 
 ```klin
 import "github/klin-lang/eventloop"
@@ -65,20 +112,20 @@ async fn ticker() {
 }
 
 fn main() {
-    let mut ex: eventloop.Executor
-    let _ = eventloop.init(&ex) or { 1 }
-    let _ = eventloop.spawn(&ex, ticker) or { 1 }
-    eventloop.run(&ex)
+    $event_loop(ex) {
+        let _ = eventloop.spawn(&ex, ticker) or { 1 }
+    }
 }
 ```
 
 ## API
 
-| Function | Role |
+| Function / macro | Role |
 |---|---|
-| `version(): i32` | package version (`2` for v0.2.0) |
+| `version(): i32` | package version (`3` for v0.3.0) |
+| `$event_loop(ex) { … }` | `let mut ex` + `init` + body + `run` |
 | `init(ex): !i32` | reset 16 timer slots + 8 task slots |
-| `every_ms` / `once_ms` / `cancel` / `stop` | v0.1 callback timers |
+| `every_ms` / `once_ms` / `cancel` / `stop` | callback timers |
 | `sleep_ms(ms): SleepFuture` | awaitable deadline (`poll` → 0/1) |
 | `spawn(ex, poll, init): !i32` | task slot; Klin sugar `spawn(&ex, async_fn)` |
 | `run(ex)` | due callbacks **and** `poll` of async tasks |
@@ -92,6 +139,8 @@ fn main() {
 ```text
 eventloop/
   version.kl
-  executor.kl
-  executor_test.kl   # klin test (skipped on import)
+  executor.kl          # API + $fn event_loop
+  executor_test.kl     # klin test (skipped on import)
+examples/
+  event_loop_macro/    # $event_loop expand / run check
 ```
