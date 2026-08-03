@@ -1,7 +1,7 @@
 # eventloop
 
 Cooperative timer + async-task executor for
-[Klin](https://github.com/MrHIDEn/klin) (issue 029).
+[Klin](https://github.com/klin-lang/klin) (issue 029).
 
 No heap `Promise`, no hidden malloc, no hidden scheduler. Callbacks and
 `async fn` state machines share one explicit `run()`.
@@ -9,17 +9,17 @@ No heap `Promise`, no hidden malloc, no hidden scheduler. Callbacks and
 ## Install
 
 ```sh
-klin get github/mrhiden/eventloop@v0.2.0
+klin get github/klin-lang/eventloop@v0.2.0
 ```
 
 ```klin
-import "github/mrhiden/eventloop"
+import "github/klin-lang/eventloop"
 ```
 
 ## Callback example (v0.1 API)
 
 ```klin
-import "github/mrhiden/eventloop"
+import "github/klin-lang/eventloop"
 import io
 
 struct App {
@@ -48,7 +48,7 @@ fn main() {
 ## Async example (v0.2 — needs Klin with `async` / `.await`)
 
 ```klin
-import "github/mrhiden/eventloop"
+import "github/klin-lang/eventloop"
 import io
 
 async fn delay_ms(ms: i64) {
