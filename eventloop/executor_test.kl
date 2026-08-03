@@ -55,3 +55,20 @@ fn test_full_queue() {
     let overflow = once_ms(&ex, 1000, on_once, cast(*mut u8, &tap)) or { 0 - 1 }
     testing.assert_eq_i32(overflow, 0 - 1)
 }
+
+fn test_sleep_ms_poll_ready() {
+    let mut fut = sleep_ms(1)
+    let mut spins: i32 = 0
+    while fut.poll() == 0 {
+        spins = spins + 1
+        if spins > 10000000 {
+            testing.assert(false)
+            return
+        }
+    }
+    testing.assert_eq_i32(fut.poll(), 1)
+}
+
+fn test_version_is_v2() {
+    testing.assert_eq_i32(version(), 2)
+}

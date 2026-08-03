@@ -1,21 +1,22 @@
 # eventloop
 
-Cooperative timer executor for [Klin](https://github.com/MrHIDEn/klin) (issue 029 MVP).
+Cooperative timer + async-task executor for
+[Klin](https://github.com/MrHIDEn/klin) (issue 029).
 
-No `async`/`await`, no hidden malloc, no hidden scheduler. You register
-callbacks, then call `run()` explicitly.
+No heap `Promise`, no hidden malloc, no hidden scheduler. Callbacks and
+`async fn` state machines share one explicit `run()`.
 
 ## Install
 
 ```sh
-klin get github/mrhiden/eventloop@v0.1.0
+klin get github/mrhiden/eventloop@v0.2.0
 ```
 
 ```klin
 import "github/mrhiden/eventloop"
 ```
 
-## Example
+## Callback example (v0.1 API)
 
 ```klin
 import "github/mrhiden/eventloop"
@@ -44,20 +45,45 @@ fn main() {
 }
 ```
 
+## Async example (v0.2 — needs Klin with `async` / `.await`)
+
+```klin
+import "github/mrhiden/eventloop"
+import io
+
+async fn delay_ms(ms: i64) {
+    eventloop.sleep_ms(ms).await
+}
+
+async fn ticker() {
+    let mut n: i32 = 0
+    while n < 3 {
+        io.println("tick")
+        n = n + 1
+        delay_ms(50).await
+    }
+}
+
+fn main() {
+    let mut ex: eventloop.Executor
+    let _ = eventloop.init(&ex) or { 1 }
+    let _ = eventloop.spawn(&ex, ticker) or { 1 }
+    eventloop.run(&ex)
+}
+```
+
 ## API
 
 | Function | Role |
 |---|---|
-| `version(): i32` | package version (`1` for v0.1.0) |
-| `init(ex): !i32` | reset 16 timer slots |
-| `every_ms(ex, ms, cb, ctx): !i32` | repeating timer → slot id |
-| `once_ms(ex, ms, cb, ctx): !i32` | one-shot timer → slot id |
-| `cancel(ex, id)` | deactivate a slot |
-| `stop(ex)` | end `run()` (ok from a callback) |
-| `run(ex)` | poll deadlines → invoke ready callbacks |
+| `version(): i32` | package version (`2` for v0.2.0) |
+| `init(ex): !i32` | reset 16 timer slots + 8 task slots |
+| `every_ms` / `once_ms` / `cancel` / `stop` | v0.1 callback timers |
+| `sleep_ms(ms): SleepFuture` | awaitable deadline (`poll` → 0/1) |
+| `spawn(ex, poll, init): !i32` | task slot; Klin sugar `spawn(&ex, async_fn)` |
+| `run(ex)` | due callbacks **and** `poll` of async tasks |
 
-- Callback type: `fn(*mut u8): void` — explicit `ctx` (Klin has no closures / globals).
-- Capacity: 16 slots embedded in `Executor` (Klin slices are primitive-element only).
+- Timer capacity: 16 slots. Task capacity: 8 × 256-byte state buffers.
 - Host idle: busy-wait on `time.mono()` (no `nanosleep` yet).
 - Not for freestanding MCU without host `time`.
 
@@ -69,11 +95,3 @@ eventloop/
   executor.kl
   executor_test.kl   # klin test (skipped on import)
 ```
-
-## Out of scope (later)
-
-- `async` / `.await` in the Klin compiler
-- `$event_loop` macro
-- MCU WFI / SysTick idle
-- `poll` / `select` I/O
-- heap queue via `Allocator`

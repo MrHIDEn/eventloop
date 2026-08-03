@@ -1,5 +1,5 @@
-/// Cooperative timer executor (host). Fixed 16-slot capacity — no hidden malloc.
-/// Issue 029 MVP: callbacks + explicit `run()`, no async/await.
+/// Cooperative timer + async-task executor (host). Fixed capacities — no malloc.
+/// Issue 029: v0.1 callbacks + v0.2 sleep_ms / spawn / poll.
 /// API uses `*mut Executor` (free functions) so helpers compose without
 /// double-pointer issues from nested mut methods.
 /// Callbacks take an explicit `ctx` pointer (no closures / no globals in Klin).
@@ -17,10 +17,25 @@ struct Slot {
     ctx: *mut u8
 }
 
+/// Fixed-size async task slot (state machine buffer + erased poll).
+/// MVP: 256-byte state — caller must keep async State within this limit
+/// (compiler does not sizeof-check yet).
+struct TaskSlot {
+    active: bool
+    poll: fn(*mut u8): i32
+    state: [256]u8
+}
+
 pub struct Executor {
     slots: [16]Slot
+    tasks: [8]TaskSlot
     running: bool
     next_id: i32
+}
+
+/// Awaitable timer future — `poll()` → 0 Pending / 1 Ready (issue 029).
+pub struct SleepFuture {
+    deadline_ns: i64
 }
 
 fn _clear_slots(ex: *mut Executor) {
@@ -36,6 +51,14 @@ fn _clear_slots(ex: *mut Executor) {
     }
 }
 
+fn _clear_tasks(ex: *mut Executor) {
+    let mut i: i32 = 0
+    while i < 8 {
+        (*ex).tasks[i].active = false
+        i = i + 1
+    }
+}
+
 fn _alloc_slot(ex: *mut Executor): !i32 {
     let mut i: i32 = 0
     while i < 16 {
@@ -47,7 +70,7 @@ fn _alloc_slot(ex: *mut Executor): !i32 {
     return error(1)
 }
 
-fn _has_active(ex: *Executor): bool {
+fn _has_timers(ex: *Executor): bool {
     let mut i: i32 = 0
     while i < 16 {
         if (*ex).slots[i].active {
@@ -56,6 +79,24 @@ fn _has_active(ex: *Executor): bool {
         i = i + 1
     }
     return false
+}
+
+fn _has_tasks(ex: *Executor): bool {
+    let mut i: i32 = 0
+    while i < 8 {
+        if (*ex).tasks[i].active {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+fn _has_work(ex: *Executor): bool {
+    if _has_timers(ex) {
+        return true
+    }
+    return _has_tasks(ex)
 }
 
 fn _next_deadline_ns(ex: *Executor): i64 {
@@ -96,11 +137,26 @@ fn _arm(ex: *mut Executor, ms: i64, repeating: bool, cb: fn(*mut u8): void, ctx:
     return id
 }
 
-/// Reset all slots. Returns `0`.
+fn _poll_tasks(ex: *mut Executor) {
+    let mut i: i32 = 0
+    while i < 8 {
+        if (*ex).tasks[i].active {
+            let poll = (*ex).tasks[i].poll
+            let rc = poll(cast(*mut u8, &(*ex).tasks[i].state[0]))
+            if rc != 0 {
+                (*ex).tasks[i].active = false
+            }
+        }
+        i = i + 1
+    }
+}
+
+/// Reset all timer and task slots. Returns `0`.
 pub fn init(ex: *mut Executor): !i32 {
     (*ex).running = false
     (*ex).next_id = 1
     _clear_slots(ex)
+    _clear_tasks(ex)
     return 0
 }
 
@@ -129,16 +185,50 @@ pub fn cancel(ex: *mut Executor, id: i32) {
     }
 }
 
-/// Stop a running executor (safe to call from a callback).
+/// Stop a running executor (safe to call from a callback or async body).
 pub fn stop(ex: *mut Executor) {
     (*ex).running = false
 }
 
-/// Poll ready timers and invoke callbacks. Explicit loop — this is where progress happens.
+/// Awaitable sleep. Registers no callback slot — `poll` checks the deadline.
+pub fn sleep_ms(ms: i64): SleepFuture {
+    let now = time.mono()
+    if ms < 1 {
+        return SleepFuture{ deadline_ns: now.ns }
+    }
+    let deadline = now.add(time.milliseconds(ms))
+    return SleepFuture{ deadline_ns: deadline.ns }
+}
+
+fn (mut f: SleepFuture) poll(): i32 {
+    let now = time.mono()
+    if now.ns >= f.deadline_ns {
+        return 1
+    }
+    return 0
+}
+
+/// Place an async state machine in a fixed task slot.
+/// Klin sugar: `eventloop.spawn(&ex, async_fn)` → emit passes erased poll/init.
+pub fn spawn(ex: *mut Executor, poll: fn(*mut u8): i32, init: fn(*mut u8): void): !i32 {
+    let mut i: i32 = 0
+    while i < 8 {
+        if !((*ex).tasks[i].active) {
+            (*ex).tasks[i].active = true
+            (*ex).tasks[i].poll = poll
+            init(cast(*mut u8, &(*ex).tasks[i].state[0]))
+            return i
+        }
+        i = i + 1
+    }
+    return error(1)
+}
+
+/// Poll ready timers and async tasks. Explicit loop — this is where progress happens.
 pub fn run(ex: *mut Executor) {
     (*ex).running = true
     while (*ex).running {
-        if !(_has_active(cast(*Executor, ex))) {
+        if !(_has_work(cast(*Executor, ex))) {
             (*ex).running = false
             return
         }
@@ -165,17 +255,31 @@ pub fn run(ex: *mut Executor) {
             }
             i = i + 1
         }
-        if !(_has_active(cast(*Executor, ex))) {
+        _poll_tasks(ex)
+        if !((*ex).running) {
+            return
+        }
+        if !(_has_work(cast(*Executor, ex))) {
             (*ex).running = false
             return
         }
-        let target = _next_deadline_ns(cast(*Executor, ex))
-        // Host idle MVP: busy-wait on monotonic clock (no nanosleep yet).
-        while (*ex).running {
-            let t = time.mono()
-            if t.ns >= target {
-                break
+        if _has_timers(cast(*Executor, ex)) {
+            let target = _next_deadline_ns(cast(*Executor, ex))
+            // Host idle MVP: busy-wait; also poll async tasks while waiting.
+            while (*ex).running {
+                _poll_tasks(ex)
+                if !((*ex).running) {
+                    return
+                }
+                if !(_has_timers(cast(*Executor, ex))) {
+                    break
+                }
+                let t = time.mono()
+                if t.ns >= target {
+                    break
+                }
             }
         }
+        // Async-only work: busy-poll SleepFuture / task poll (no timer slots).
     }
 }
