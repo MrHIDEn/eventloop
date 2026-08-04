@@ -69,6 +69,26 @@ fn test_sleep_ms_poll_ready() {
     testing.assert_eq_i32(fut.poll(), 1)
 }
 
-fn test_version_is_v2() {
-    testing.assert_eq_i32(version(), 2)
+fn test_flag_wait_pending_then_ready() {
+    let mut f = Flag{ set: 0 }
+    flag_init(&f)
+    let mut fut = flag_wait(&f)
+    testing.assert_eq_i32(fut.poll(), 0)
+    flag_set(&f)
+    testing.assert_eq_i32(fut.poll(), 1)
+    // auto-reset: second poll stays Pending until set again
+    testing.assert_eq_i32(fut.poll(), 0)
+}
+
+fn test_flag_clear() {
+    let mut f = Flag{ set: 0 }
+    flag_init(&f)
+    flag_set(&f)
+    flag_clear(&f)
+    let mut fut = flag_wait(&f)
+    testing.assert_eq_i32(fut.poll(), 0)
+}
+
+fn test_version_is_v4() {
+    testing.assert_eq_i32(version(), 4)
 }

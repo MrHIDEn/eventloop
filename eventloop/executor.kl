@@ -38,6 +38,18 @@ pub struct SleepFuture {
     deadline_ns: i64
 }
 
+/// One-shot event flag for ISR → async handoff (issue 029 / `flag_wait`).
+/// Field is plain `i32`; accessors use `*mut volatile i32` (Klin has no
+/// `volatile` struct fields). ISR may only call `flag_set` / `flag_clear`.
+pub struct Flag {
+    set: i32
+}
+
+/// Awaitable over a `Flag` — `poll()` → 0 Pending / 1 Ready (auto-reset).
+pub struct FlagFuture {
+    flag: *mut Flag
+}
+
 fn _clear_slots(ex: *mut Executor) {
     let mut i: i32 = 0
     while i < 16 {
@@ -208,6 +220,43 @@ fn (mut f: SleepFuture) poll(): i32 {
     return 0
 }
 
+fn _flag_ptr(f: *mut Flag): *mut volatile i32 {
+    return cast(*mut volatile i32, &(*f).set)
+}
+
+/// Reset flag to cleared (0).
+pub fn flag_init(f: *mut Flag) {
+    let p = _flag_ptr(f)
+    *p = 0
+}
+
+/// Producer / ISR: set flag (1). Does not touch the Executor.
+pub fn flag_set(f: *mut Flag) {
+    let p = _flag_ptr(f)
+    *p = 1
+}
+
+/// Clear flag without waiting.
+pub fn flag_clear(f: *mut Flag) {
+    let p = _flag_ptr(f)
+    *p = 0
+}
+
+/// Awaitable one-shot wait. Ready → auto-clear → return 1 from `poll`.
+/// Continuation happens only when `run()` polls again (no push-wake from ISR).
+pub fn flag_wait(f: *mut Flag): FlagFuture {
+    return FlagFuture{ flag: f }
+}
+
+fn (mut fut: FlagFuture) poll(): i32 {
+    let p = _flag_ptr(fut.flag)
+    if *p != 0 {
+        *p = 0
+        return 1
+    }
+    return 0
+}
+
 /// Place an async state machine in a fixed task slot.
 /// Klin sugar: `eventloop.spawn(&ex, async_fn)` → emit passes erased poll/init.
 pub fn spawn(ex: *mut Executor, poll: fn(*mut u8): i32, init: fn(*mut u8): void): !i32 {
@@ -280,7 +329,7 @@ pub fn run(ex: *mut Executor) {
                 }
             }
         }
-        // Async-only work: busy-poll SleepFuture / task poll (no timer slots).
+        // Async-only work: busy-poll SleepFuture / FlagFuture / task poll.
     }
 }
 

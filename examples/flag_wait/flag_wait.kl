@@ -1,0 +1,37 @@
+/// flag_wait + synthetic "IRQ" via once_ms (issue 029).
+/// Shared Flag lives in C BSS (`flag_cell.c`) — Klin has no module-level vars.
+/// Real boards: same pattern with @[isr("…")] calling flag_set only.
+import "../../eventloop"
+import io
+
+@[link("flag_cell.c")]
+@[cimport, codename("flag_cell")]
+fn flag_cell(): *mut eventloop.Flag
+
+/// Synthetic IRQ: only sets the flag (never run/spawn/await).
+fn on_fake_irq(ctx: *mut u8) {
+    let _ = ctx
+    eventloop.flag_set(flag_cell())
+}
+
+async fn reader() {
+    eventloop.flag_wait(flag_cell()).await
+    io.println("flag ready — continued after await")
+}
+
+fn main() {
+    eventloop.flag_init(flag_cell())
+    $event_loop(ex) {
+        let arm_rc = eventloop.once_ms(&ex, 30, on_fake_irq, cast(*mut u8, 0)) or {
+            0
+        }
+        if arm_rc == 0 {
+            return
+        }
+        let spawn_rc = eventloop.spawn(&ex, reader) or { 0 - 1 }
+        if spawn_rc < 0 {
+            return
+        }
+    }
+    printf("flag_wait demo done version=%d\n", eventloop.version())
+}
